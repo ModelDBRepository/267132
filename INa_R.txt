@@ -1,0 +1,209 @@
+
+//+++++++++++Header+++++++++++
+#pragma rtGlobals=3
+#include <NIDAQmxWaveScanProcs>
+#include <NIDAQmxWaveFormGenProcs>
+Static strconstant ksNIDAQmxPath = "root:System:NIDAQmx" 
+Static strconstant ksNIDAQmxPathParent = "root:System" 
+//++++++++++++++++++++++++++++
+
+Function RT() 			// Runs User interface
+Variable/g G=0.001
+Variable/g Er = 77  
+Variable/g Temp = 24
+Variable/g Delta_T=0.005
+Variable/g Init_Check 
+Dowindow /K Dyn_Clamp
+newpanel /N=Dyn_Clamp /w=(100,100,330,320) /K=1
+Setvariable Conductance disable=0, bodywidth=50, noproc, pos={200,10}, size={10,20}, Title=" ",Value=G
+Setvariable Erev disable=0, bodywidth=50, noproc, pos={200,30}, size={10,20}, Title=" ",Value=Er
+Setvariable Temp disable=0, bodywidth=50, noproc, pos={200,50}, size={10,20}, Title=" ",Value=Temp
+Setvariable Delta_Time disable=0, bodywidth=50, noproc, pos={200,70}, size={10,20}, Title=" " 
+       Setvariable Delta_Time Value=Delta_T
+Titlebox TB1, Fsize=12, Frame=0, Anchor=LT, Pos={10,10}, Size={1,1}
+			Titlebox TB1, Title="Conductance (in mS/cm^2):"
+Titlebox TB2, Fsize=12, Frame=0, Anchor=LT, Pos={10,30}, Size={1,1}, Title="Erev (in mV):"
+Titlebox TB3, Fsize=12, Frame=0, Anchor=LT, Pos={10,50}, Size={1,1}, Title="Temperature (in C):"
+Titlebox TB4, Fsize=12, Frame=0, Anchor=LT, Pos={10,70}, Size={1,1}, Title="dt (in ms):"
+Titlebox TB7, Fsize=18, Frame=2, Anchor=LT, Pos={85,175}, Size={1,1}, Title="IDLE"
+Checkbox InitDQ  Win=Dyn_Clamp, Value=0, Title="Initialize Board", Side=0, Pos={10,90}, Proc=InitDAQ Switch(Init_Check) 
+    Case 0:
+       Checkbox InitDQ Value=0,Title="Initialize Board", Disable=0 
+       Break 
+    Case 1:
+        Checkbox InitDQ Value=1,Title="Initialize Board: OK", Disable=2
+        Break 
+EndSwitch
+Button Go Win=Dyn_Clamp, Pos= {10,110}, Size={90,20}, Title="Go!" , Proc=Dynamic_Clamp 
+Button Cancel Win=Dyn_Clamp, Pos= {120,110}, Size={90,20}, Title="Cancel" , Proc=KWind 
+end
+//###############################################
+Function Dynamic_Clamp(Ctrlname):Buttoncontrol
+String Ctrlname
+Nvar G 
+NVar Er 
+NVar Temp
+NVar Delta_T
+Variable dt= Delta_T			//Time  Step
+Variable gnmh
+make/o/n=1 Cond = G			//Max Conductances in mS/cm^2) {Na,Na_r}
+make/o/n=1 Erev = Er			//Battery Voltage in mV {Na,Na_r) 
+make/o/n=2 Alpha, Betas,Taus,X0, x_zeros
+Make/o/n=1 AI_Read			//1-point Wave with the value read from AI-0
+Make/o/n=1 AO_Write			//1-point wave with the value written to AO-0
+Make/o/n=(100000) Time_Micros	//Time each loops takes to run, in microseconds //*******************************************Initializes DAC board **************************** fDAQmx_ResetDevice("Dev2")
+DAQmx_AI_SetupReader /DEV="Dev2" "0/RSE,-10,10" 
+DAQmx_AO_SetOutputs /DEV="Dev2" /KEEP=1 "0,0,-10,10"
+//*******************************************done with initialization ****************************
+//Misc Variables
+Variable Keys, index, timer
+Variable V
+Variable Q10 = 3	
+Variable Celsius=Temp 				//Desired temp
+Variable Tcorr = Q10^((celsius-20)/10) 		//Temperature correction
+//s-ALFA
+Variable Aalpha_s = -0.00493 			// (/ms)
+Variable V0alpha_s =-4.48754 			// (mV)
+Variable Kalpha_s = -1				// (mV)
+Variable Shiftalpha_s = 0.00008			// (/ms)
+//s-BETA
+Variable Abeta_s = 0.01558 			// (/ms)
+Variable V0beta_s = 43.97494 			// (mV)
+Variable Kbeta_s =  0.10818 			// (mV)
+Variable Shiftbeta_s = 0.04752			// (/ms)
+//f-ALFA
+Variable Aalpha_f =0.31836 			// (/ms)
+Variable V0alpha_f = -80 			// (mV) 
+Variable Kalpha_f = -62.52621			// (mV) 1/TAU
+//f-BETA
+Variable Abeta_f = 0.01014 			// (/ms)
+Variable V0beta_f = -83.3332 
+Variable Kbeta_f = 16.05379 			// (mV)
+//------------------------------------------- Deals with the User interface-----------------------------------------------
+Fade(2)
+TitleBox TB7, Win=Dyn_Clamp, Disable = 1
+TitleBox TB5  Win=Dyn_Clamp, Disable = 0, FColor=(65280,0,0), Fsize=15, FStyle=0, Frame=0
+Titlebox  TB5  Win=Dyn_clamp, Anchor=LT, Pos={42,172}, Size={1,1}, Title="***Simulation is running***"
+TitleBox TB6, Win=Dyn_Clamp, Disable = 0, FColor=(65280,0,0), Fsize=15, FStyle=0, Frame=0, 
+TitleBox TB6, Win=Dyn_Clamp, Anchor=LT, Pos={47,190}, Size={1,1}, Title="***Press ESC to stop***"
+//----------------------------------------------------------------------------------------------------------------------------------//…………………………..Main loop....................................
+Do
+       fDAQmx_AI_GetReader("Dev2",AI_Read )
+       V=AI_Read[0]*100				//Volts
+       //Alpha Functions
+       alpha[0] = Shiftalpha_s+Aalpha_s*((v+V0alpha_s)/1)/(exp((v+V0alpha_s)/Kalpha_s)-1) 
+       Alpha[1] = Aalpha_f*exp((v-V0alpha_f)/Kalpha_f)
+       Alpha=Alpha*Tcorr
+       //Beta Functions
+       Betas[0]=ShiftBeta_s+Abeta_s*(V+V0Beta_S)/( exp ((V+V0Beta_s)/KBeta_s)-1)
+       Betas[1]=ABeta_f* exp ((V-V0Beta_f)/KBeta_f)
+       Betas=Betas*Tcorr
+       Taus = 1/(Alpha+Betas)
+       X0 = Alpha*Taus	
+       X_zeros = (1-dt/Taus)*X_zeros+dt/Taus*X0 	//Euler method
+       gnmh=Cond[0]*X_zeros[0]*x_zeros[1] 		//Calculate conductances g with given gates
+       AO_Write=gnmh*(V-Erev[0])*10  		//Ten fold gain adjustment 
+       fDAQmx_AO_UpdateOutputs("Dev2",AO_Write)
+       Keys=GetKeyState(0)
+       if (Keys!=0) 					//Hit ESC to stop simulation
+       Break
+       endif
+while(1)
+//...................................................................................
+fDAQmx_ResetDevice("Dev2")
+Fade(0)
+Titlebox TB5, Win=Dyn_Clamp, Disable=1
+Titlebox TB6, Win=Dyn_Clamp, Disable=1 
+Titlebox TB7, Win=Dyn_Clamp, Disable=0 
+end
+//###############################################
+Function KWind(Ctrlname):Buttoncontrol
+String Ctrlname Dowindow/k Dyn_Clamp
+end
+////###############################################
+Function Fade(Val)
+Variable Val
+Setvariable Conductance 	Win=Dyn_Clamp, disable=Val
+Setvariable Erev 		Win=Dyn_Clamp, disable=Val
+Setvariable Temp 		Win=Dyn_Clamp, disable=Val
+Setvariable Delta_Time		Win=Dyn_Clamp, disable=Val
+Titlebox TB1, 			Win=Dyn_Clamp, disable=Val
+Titlebox TB2, 			Win=Dyn_Clamp, disable=Val
+Titlebox TB3, 			Win=Dyn_Clamp, disable=Val
+Titlebox TB4, 			Win=Dyn_Clamp, disable=Val
+Button Go 			Win=Dyn_Clamp, disable=Val
+Button Cancel 			Win=Dyn_Clamp, disable=Val
+end
+////###############################################
+Function InitDAQ(Ctrlname,Checked):CheckBoxControl  // NIDAQ MX function – INITIALIZE BOARD
+String Ctrlname
+Variable Checked
+Nvar Init_Check
+Init_Check=1
+Checkbox InitDQ  Win=Dyn_Clamp, Value=1, Disable=2, Title="Initialize Board: OK"
+// Change to NIDAQ MX data folder
+String PreviousDataFolder = GetDataFolder(1)	//Save previous data folder
+NewDataFolder/O/S $ksNIDAQmxPathParent	//Make sure parent folder exists
+NewDataFolder/O/S $ksNIDAQmxPath
+//  Global Variables for NIDAQ MX Functionality	//Change to NIDAQ MX data folder
+String/G mxDevName;	// Placeholder for the board name
+Variable/G mxChanMode = 0;	//  Switch setting on breakout box.  
+//Usually 0 (Diff) for BNC-2090 or 3 (PDIFF) for BNC-2110. 
+//Note: all switches must be set the same on BNC-2090.  //0 = Diff (8 inputs)
+//1 = RSE, 2 = NRSE
+// 3 = P-Diff (don't use)
+// -1 = default (don't use!) 
+Variable/G mxNumChan;		//  Number of NIDAQ input channels ("ACH", either 8 or 16)
+Variable/G mxNumDAC = 2;	//  Number of NIDAQ output channels ("DAC", fixed at 2)
+// Max and Min Voltages for each channel (go ahead and set for all 16 possible channels, 
+//so don't have to resize) 
+//Note:  Should be able to set Max and Min V individually for each ACH and DAC, if desired.  
+Make/O/N=16 mxChanMaxV = {10,10,10,10, 10,10,10,10, 10,10,10,10, 10,10,10,10}
+	Make/O/N=16 mxChanMinV = {-10,-10,-10,-10,	-10,-10,-10,-10,	-10,-10,-10,-10,	-10,-10,-10,-10}
+	Make/O/N=2 mxDacMaxV = {10,10}	// Max Voltage for each DAC
+	Make/O/N=2 mxDacMinV = {-10,-10}	// Min Voltage for each DAC
+//Set mxNumChan based on mxChanMode
+string mode	//Used to display test of mode when printing status later 
+switch(mxChanMode) 
+       case 0://DIFF mode 
+       mxNumChan = 8 
+       mode = "DIFF" 
+       break
+       case 1: //RSE mode 
+       mxNumChan = 16 
+       mode = "RSE" 
+       break
+       case 2://NRSE mode 
+       mxNumChan = 16 
+       mode = "NRSE"
+       break
+       case 3://Pseudo-Differential mode 
+       mxNumChan = 8 
+       mode = "PDIFF" 
+       break 
+       default://invalid modes: default (-1) or other.
+       //Disable all channels
+       mxNumChan = 0
+       //Print error message
+Print "#### ERROR during Init_NIDAQmx: Invalid Mode = " + num2str(mxChanMode) + "!"
+       Print  "ACH0-7 disabled." 
+       abort 
+endswitch
+//  Collect name of first board from list of all active board names 
+mxDevName = StringFromList(0,fDAQmx_DeviceNames());
+If(stringmatch(mxDevName,""))
+    //  If there are NO active boards, quit with error message
+    Print "#### ERROR during Init_NIDAQmx():  No NIDAQ MX board(s) to setup!"; 
+    else
+//  Board(s) Found!  Assume we are going to work with the first board ONLY! fDAQmx_ResetDevice(mxDevName)	//  Do a hardware reset of the board
+    //  Print Status to History
+    Print "-- NIDAQmx Initialized:  Board  = " + mxDevName+ ", Mode = " + mode + "."
+    //", DAC0 & DAC1 set to 0V." 
+endif
+SetDataFolder PreviousDataFolder // Reset data folder to value before function call 
+End 
+
+1/14/2021	DC Nature.ipf	1
+
+1/14/2021	DC Nature.ipf	1
+
